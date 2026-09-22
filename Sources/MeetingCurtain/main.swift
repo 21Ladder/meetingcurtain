@@ -8,10 +8,12 @@ if let index = CommandLine.arguments.firstIndex(of: "--render-curtain"), index +
 }
 
 // Launch Services keeps a single instance, but running the binary directly bypasses that.
-// In that case, ask the running copy to open its settings and quit.
-if let bundleID = Bundle.main.bundleIdentifier,
-   NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-       .contains(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+// In that case, ask the running copy to open its settings and quit. Only the younger copy quits, so
+// two copies starting at the same moment don't both exit.
+let me = NSRunningApplication.current
+func launchOrder(_ app: NSRunningApplication) -> (Date, pid_t) { (app.launchDate ?? .distantFuture, app.processIdentifier) }
+if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? appID)
+       .contains(where: { launchOrder($0) < launchOrder(me) }) {
     DistributedNotificationCenter.default().postNotificationName(
         AppDelegate.openSettingsNotification, object: nil, userInfo: nil, deliverImmediately: true
     )

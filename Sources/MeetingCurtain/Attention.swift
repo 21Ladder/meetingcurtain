@@ -44,7 +44,7 @@ final class Attention {
     static func soundExists(_ name: String) -> Bool { NSSound(named: NSSound.Name(name)) != nil }
 
     /// Declaring user activity turns a sleeping display on, the same as touching the trackpad.
-    private func wakeDisplay() {
+    func wakeDisplay() {
         let result = IOPMAssertionDeclareUserActivity(
             "MeetingCurtain meeting reminder" as CFString, kIOPMUserActiveLocal, &activityAssertion
         )
@@ -71,8 +71,9 @@ final class Attention {
         await refreshNotificationStatus()
     }
 
-    private func notify(_ meetings: [Meeting]) {
-        guard notificationStatus == .authorized || notificationStatus == .provisional else { return }
+    /// Posted even if the cached permission says no: it may have been allowed since, and macOS simply
+    /// drops notifications it isn't allowed to show.
+    func notify(_ meetings: [Meeting]) {
         for meeting in meetings {
             let content = UNMutableNotificationContent()
             content.title = meeting.title

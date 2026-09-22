@@ -39,7 +39,10 @@ cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
 echo "▸ Signing ($([[ "$SIGN_IDENTITY" == "-" ]] && echo ad-hoc || echo "$SIGN_IDENTITY"))"
-codesign --force --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" "$APP"
+# Sandboxed without network access and with the hardened runtime: macOS itself guarantees the app
+# stays offline and only reaches the calendar.
+codesign --force --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" --options runtime \
+    --entitlements Resources/MeetingCurtain.entitlements "$APP"
 codesign --verify --strict "$APP"
 
 echo "✓ Built $APP ($(du -sh "$APP" | cut -f1))"

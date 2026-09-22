@@ -6,9 +6,10 @@ import MeetingCurtainCore
 @MainActor @Observable
 final class Preferences {
     enum Key: String {
-        case leadMinutes, includeAllDay, skipDeclined, playSound, soundName, lockScreenAlerts, launchAtLogin
+        case leadMinutes, includeAllDay, skipDeclined, playSound, soundName, lockScreenAlerts, launchAtLogin, calendarChoices
     }
 
+    static let defaultSound = "Glass"
     static let sounds = ["Glass", "Hero", "Ping", "Submarine", "Funk", "Sosumi", "Blow", "Bottle", "Purr", "Tink"]
     static let leadRange = 0...30
 
@@ -22,6 +23,7 @@ final class Preferences {
     var soundName: String { didSet { save(soundName, .soundName) } }
     var lockScreenAlerts: Bool { didSet { save(lockScreenAlerts, .lockScreenAlerts) } }
     var launchAtLogin: Bool { didSet { save(launchAtLogin, .launchAtLogin) } }
+    var calendarSelection: CalendarSelection { didSet { save(calendarSelection.choices, .calendarChoices) } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -30,7 +32,7 @@ final class Preferences {
             Key.includeAllDay.rawValue: false,
             Key.skipDeclined.rawValue: false,
             Key.playSound.rawValue: true,
-            Key.soundName.rawValue: "Glass",
+            Key.soundName.rawValue: Self.defaultSound,
             Key.lockScreenAlerts.rawValue: true,
             Key.launchAtLogin.rawValue: true,
         ])
@@ -39,9 +41,13 @@ final class Preferences {
         includeAllDay = defaults.bool(forKey: Key.includeAllDay.rawValue)
         skipDeclined = defaults.bool(forKey: Key.skipDeclined.rawValue)
         playSound = defaults.bool(forKey: Key.playSound.rawValue)
-        soundName = defaults.string(forKey: Key.soundName.rawValue) ?? "Glass"
+        let sound = defaults.string(forKey: Key.soundName.rawValue) ?? ""
+        soundName = Self.sounds.contains(sound) ? sound : Self.defaultSound
         lockScreenAlerts = defaults.bool(forKey: Key.lockScreenAlerts.rawValue)
         launchAtLogin = defaults.bool(forKey: Key.launchAtLogin.rawValue)
+        calendarSelection = CalendarSelection(
+            choices: defaults.dictionary(forKey: Key.calendarChoices.rawValue) as? [String: Bool] ?? [:]
+        )
     }
 
     var policy: CurtainPolicy {

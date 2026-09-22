@@ -86,9 +86,9 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     }
 
     private func item(for meeting: Meeting, now: Date) -> NSMenuItem {
-        let item = ActionItem(meeting.title) {
-            if let url = meeting.joinURL {
-                NSWorkspace.shared.open(url)
+        let item = ActionItem(meeting.title) { [monitor] in
+            if meeting.joinURL != nil {
+                monitor.openFromMenu(meeting)
             } else if let calendarApp = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.iCal") {
                 NSWorkspace.shared.openApplication(at: calendarApp, configuration: .init())
             }
@@ -141,7 +141,9 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
     static func relative(_ date: Date, now: Date) -> String {
         let minutes = Int((date.timeIntervalSince(now) / 60).rounded(.up))
         switch minutes {
-        case ..<1: return "now"
+        case ..<1:
+            let ago = Int(now.timeIntervalSince(date) / 60)
+            return ago >= 1 ? "started \(ago) min ago" : "now"
         case ..<60: return "in \(minutes) min"
         default:
             let hours = minutes / 60, rest = minutes % 60

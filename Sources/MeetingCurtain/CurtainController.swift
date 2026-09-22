@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 import MeetingCurtainCore
 
@@ -15,9 +16,11 @@ final class CurtainController {
     private var retiredWindows: [CurtainPanel] = []
     private var guardGeneration = 0
 
-    var isVisible: Bool { !windows.isEmpty }
+    /// Based on the model, not the windows: while displays are reconfigured there can briefly be no screen
+    /// and no window, but the curtain is still up.
+    var isVisible: Bool { !model.meetings.isEmpty }
     /// The meetings currently on screen.
-    var meetings: [Meeting] { isVisible ? model.meetings : [] }
+    var meetings: [Meeting] { model.meetings }
 
     func show(_ meetings: [Meeting], bringToFront: Bool) {
         // Assigning an equal value would still re-render every full-screen view.
@@ -33,6 +36,21 @@ final class CurtainController {
         retire(windows)
         windows.removeAll()
         model.meetings = []
+    }
+
+    /// While nobody can see the curtain (display asleep, screen locked) its countdown stops and it ignores
+    /// input. When it can be seen again it is raised with a fresh input guard, so the key or click that
+    /// woke the display can't act on it.
+    func setLive(_ live: Bool) {
+        guard model.isLive != live else { return }
+        model.isLive = live
+        guard isVisible else { return }
+        if live { bringToFront() } else { suspendInput() }
+    }
+
+    private func suspendInput() {
+        guardGeneration += 1
+        model.acceptsInput = false
     }
 
     private func retire(_ closing: [CurtainPanel]) {
@@ -74,6 +92,7 @@ final class CurtainController {
         for screen in NSScreen.screens {
             let window = CurtainPanel(screen: screen)
             window.contentView = FirstClickHostingView(rootView: CurtainView(model: model))
+            window.onSnoozeKey = { [model] in if model.acceptsInput { model.onSnooze() } }
             window.alphaValue = animated ? 0 : 1
             windows.append(window)
         }
@@ -86,9 +105,8 @@ final class CurtainController {
     }
 
     private func startInputGuard() {
-        guardGeneration += 1
+        suspendInput()
         let generation = guardGeneration
-        model.acceptsInput = false
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.inputGuard) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.guardGeneration == generation else { return }
@@ -127,6 +145,20 @@ final class CurtainPanel: NSPanel {
 
     // Swallow keys nothing handles (e.g. typing during the input guard) instead of beeping.
     override func noResponder(for eventSelector: Selector) {}
+
+    /// The physical S key on layouts where it doesn't type "s" (e.g. Russian, Greek), which SwiftUI's
+    /// "s" shortcut doesn't match.
+    var onSnoozeKey: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        let typesNonLatin = event.charactersIgnoringModifiers?.unicodeScalars.contains { !$0.isASCII } ?? false
+        if event.keyCode == UInt16(kVK_ANSI_S), typesNonLatin,
+           event.modifierFlags.isDisjoint(with: [.command, .control, .option, .shift]) {
+            onSnoozeKey?()
+        } else {
+            super.keyDown(with: event)
+        }
+    }
 }
 
 /// Buttons respond to the first click even while another app is active.

@@ -72,7 +72,24 @@ import Testing
         }
     }
 
+    @Test func htmlDescriptionEntities() {
+        let notes = #"<p>Agenda</p><a href="https://us02web.zoom.us/j/123?uname=x&amp;pwd=abc">Join</a>"#
+        #expect(link(notes: notes) == "https://us02web.zoom.us/j/123?uname=x&pwd=abc")
+    }
+
     @Test func nativeSchemes() {
         #expect(link(url: "zoommtg://zoom.us/join?confno=123") == "zoommtg://zoom.us/join?confno=123")
+    }
+
+    @Test func appSchemesOnlyForTheirOwnHosts() {
+        // Anyone can put an invitation into your calendar, so its notes must not reach other apps' URL handlers.
+        #expect(link(notes: "zoommtg://attacker.example/join?action=x") == nil)
+        #expect(link(url: "msteams:/l/meetup-join/abc") == nil)
+        #expect(link(url: "file:///etc/passwd") == nil)
+        #expect(link(notes: "https://meet.google.com.attacker.example/abc-defg-hij") == nil)
+    }
+
+    @Test func linksAreUpgradedToHTTPS() {
+        #expect(link(notes: "http://us02web.zoom.us/j/123?pwd=abc") == "https://us02web.zoom.us/j/123?pwd=abc")
     }
 }

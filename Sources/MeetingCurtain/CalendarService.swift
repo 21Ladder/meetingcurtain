@@ -11,7 +11,7 @@ final class CalendarService {
     }
 
     let store = EKEventStore()
-    /// Join links by occurrence id, reused while the event is unmodified: scanning notes is the
+    /// Join links by occurrence and calendar, reused while the event is unmodified: scanning notes is the
     /// most expensive part of a refresh.
     private var linkCache: [String: (modified: Date, link: URL?)] = [:]
 
@@ -27,34 +27,44 @@ final class CalendarService {
         }
     }
 
-    /// Event occurrences overlapping the range, soonest first. Cancelled events are left out, and an event
-    /// that appears in several calendars (e.g. your own and a shared one) is listed once.
-    func meetings(from start: Date, to end: Date) -> [Meeting] {
-        guard hasAccess else { return [] }
-        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+    /// Event occurrences in `calendars` overlapping the range, soonest first. Cancelled events are left
+    /// out, and an event that appears in several calendars (e.g. your own and a shared one) is listed once.
+    func meetings(from start: Date, to end: Date, in calendars: [EKCalendar]) -> [Meeting] {
+        // Never pass an empty list: `nil` means every calendar.
+        guard !calendars.isEmpty else { return [] }
+        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: calendars)
+        let localCalendar = Calendar.current
         var cache: [String: (modified: Date, link: URL?)] = [:]
-        var seen = Set<String>()
-        var result: [Meeting] = []
+        var copies: [(meeting: Meeting, isOwnCopy: Bool)] = []
         for event in store.events(matching: predicate) {
-            guard event.status != .canceled, let start = event.startDate else { continue }
-            let id = Meeting.occurrenceID(eventID: Self.stableID(of: event), start: start)
-            guard seen.insert(id).inserted else { continue }
+            guard event.status != .canceled, let start = event.startDate, let end = event.endDate else { continue }
+            let isAllDay = event.isAllDay || Meeting.coversWholeDays(start: start, end: end, calendar: localCalendar)
+            let id = Meeting.occurrenceID(eventID: Self.stableID(of: event), start: start, isAllDay: isAllDay,
+                                          calendar: localCalendar)
+            // Per calendar: copies of one event in several calendars can carry different notes.
+            let cacheKey = "\(id)|\(event.calendar?.calendarIdentifier ?? "")"
             let link: URL?
-            if let modified = event.lastModifiedDate, let cached = linkCache[id], cached.modified == modified {
+            if let modified = event.lastModifiedDate, let cached = linkCache[cacheKey], cached.modified == modified {
                 link = cached.link
             } else {
                 link = MeetingLinks.joinURL(url: event.url, location: event.location, notes: event.notes)
             }
-            if let modified = event.lastModifiedDate { cache[id] = (modified, link) }
-            if let meeting = Meeting(event: event, id: id, joinURL: link) { result.append(meeting) }
+            if let modified = event.lastModifiedDate { cache[cacheKey] = (modified, link) }
+            // `isCurrentUser` only matches in the account that got the invitation.
+            let me = event.attendees?.first(where: \.isCurrentUser)
+            let meeting = Meeting(event: event, id: id, start: start, end: end, isAllDay: isAllDay,
+                                  isDeclined: me?.participantStatus == .declined, joinURL: link)
+            copies.append((meeting, me != nil))
         }
         linkCache = cache
-        return result.sorted { $0.start < $1.start }
+        return Meeting.merged(copies)
     }
 
     /// The server's identifier survives syncs and calendar moves; `eventIdentifier` can change then.
     static func stableID(of event: EKEvent) -> String {
-        event.calendarItemExternalIdentifier ?? event.eventIdentifier ?? event.calendarItemIdentifier
+        if let id = event.calendarItemExternalIdentifier, !id.isEmpty { return id }
+        if let id = event.eventIdentifier, !id.isEmpty { return id }
+        return event.calendarItemIdentifier
     }
 
     func eventCalendars() -> [EKCalendar] {
@@ -88,18 +98,16 @@ final class CalendarService {
 }
 
 extension Meeting {
-    init?(event: EKEvent, id: String, joinURL: URL?) {
-        guard let start = event.startDate, let end = event.endDate else { return nil }
+    init(event: EKEvent, id: String, start: Date, end: Date, isAllDay: Bool, isDeclined: Bool, joinURL: URL?) {
         let title = event.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let location = event.location?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let declined = event.attendees?.contains { $0.isCurrentUser && $0.participantStatus == .declined } ?? false
         self.init(
             id: id,
             title: title.isEmpty ? "Untitled event" : title,
             start: start,
             end: end,
-            isAllDay: event.isAllDay,
-            isDeclined: declined,
+            isAllDay: isAllDay,
+            isDeclined: isDeclined,
             calendarTitle: event.calendar?.title ?? "",
             color: CalendarColor(event.calendar?.color),
             location: location.isEmpty ? nil : location,
@@ -116,4 +124,17 @@ extension CalendarColor {
         }
         self.init(red: color.redComponent, green: color.greenComponent, blue: color.blueComponent)
     }
+}
+
+extension CalendarInfo {
+    init(_ calendar: EKCalendar) {
+        self.init(id: calendar.calendarIdentifier, title: calendar.title, account: calendar.source?.title ?? "",
+                  isFeed: calendar.type == .subscription || calendar.type == .birthday,
+                  isSubscribed: calendar.isSubscribed, isWritable: calendar.allowsContentModifications,
+                  isDelegate: calendar.source?.isDelegate ?? false)
+    }
+}
+
+extension CalendarSelection {
+    func includes(_ calendar: EKCalendar) -> Bool { includes(CalendarInfo(calendar)) }
 }

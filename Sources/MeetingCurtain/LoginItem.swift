@@ -1,3 +1,4 @@
+import Foundation
 import ServiceManagement
 
 /// "Open at Login" through the system's login item list (System Settings → General → Login Items).
@@ -7,7 +8,8 @@ enum LoginItem {
 
     static var isInstalledInApplications: Bool {
         let path = Bundle.main.bundleURL.resolvingSymlinksInPath().path
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        // Inside the App Sandbox the home directory APIs return the app's container, not the user's home.
+        let home = getpwuid(getuid()).map { String(cString: $0.pointee.pw_dir) } ?? NSHomeDirectory()
         return path.hasPrefix("/Applications/") || path.hasPrefix(home + "/Applications/")
     }
 

@@ -16,6 +16,8 @@ public enum MeetingLinks {
 
     public static func firstLink(in text: String) -> URL? {
         guard let detector else { return nil }
+        // Google sends rich-text descriptions as HTML, so query strings arrive as "&amp;".
+        let text = text.replacingOccurrences(of: "&amp;", with: "&")
         var found: URL?
         detector.enumerateMatches(in: text, range: NSRange(text.startIndex..., in: text)) { match, _, stop in
             if let url = match?.url, let link = normalized(url) {
@@ -30,10 +32,10 @@ public enum MeetingLinks {
     public static func serviceName(for url: URL) -> String {
         let scheme = url.scheme?.lowercased() ?? ""
         let host = url.host?.lowercased() ?? ""
-        func under(_ domain: String) -> Bool { host == domain || host.hasSuffix("." + domain) }
+        func under(_ domain: String) -> Bool { Self.under(domain, host) }
         if host == "meet.google.com" { return "Google Meet" }
         if scheme == "zoommtg" || under("zoom.us") || under("zoomgov.com") { return "Zoom" }
-        if scheme == "msteams" || host.hasPrefix("teams.") { return "Teams" }
+        if host.hasPrefix("teams.") { return "Teams" }
         if under("webex.com") { return "Webex" }
         if host == "facetime.apple.com" { return "FaceTime" }
         if host == "app.slack.com" { return "Slack" }
@@ -41,22 +43,32 @@ public enum MeetingLinks {
     }
 
     /// Returns the link if it points to a known video-call service, unwrapping Google redirect links.
+    /// Links come from invitations anyone can send, so only known hosts pass, and never unencrypted.
     static func normalized(_ url: URL) -> URL? {
-        guard let scheme = url.scheme?.lowercased() else { return nil }
-        if scheme == "zoommtg" || scheme == "msteams" { return url }
-        guard scheme == "https" || scheme == "http", let host = url.host?.lowercased() else { return nil }
+        guard let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased() else { return nil }
+        // The Zoom app's own scheme, but only for Zoom's hosts: an invitation must not be able to hand
+        // arbitrary parameters to another app.
+        if scheme == "zoommtg" { return under("zoom.us", host) || under("zoomgov.com", host) ? url : nil }
+        guard scheme == "https" || scheme == "http" else { return nil }
 
         // Google wraps links in event descriptions as https://www.google.com/url?q=<target>.
-        if host == "google.com" || host.hasSuffix(".google.com"), url.path == "/url" {
+        if under("google.com", host), url.path == "/url" {
             let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                 .queryItems?.first { $0.name == "q" }?.value
             return target.flatMap(URL.init(string:)).flatMap(normalized)
         }
-        return isVideoCall(host: host, path: url.path.lowercased()) ? url : nil
+        guard isVideoCall(host: host, path: url.path.lowercased()),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        components.scheme = "https"
+        return components.url
+    }
+
+    private static func under(_ domain: String, _ host: String) -> Bool {
+        host == domain || host.hasSuffix("." + domain)
     }
 
     static func isVideoCall(host: String, path: String) -> Bool {
-        func under(_ domain: String) -> Bool { host == domain || host.hasSuffix("." + domain) }
+        func under(_ domain: String) -> Bool { Self.under(domain, host) }
         let hasPath = path.count > 1
 
         if host == "meet.google.com" { return hasPath }

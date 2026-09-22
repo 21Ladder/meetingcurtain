@@ -115,6 +115,17 @@ public enum Planner {
         return (opens, closes)
     }
 
+    /// Meetings on the curtain that have reached their start and are worth a second alert: timed ones,
+    /// not long over (e.g. after the lid stayed closed until the next morning).
+    public static func startAlerts(onScreen meetings: [Meeting], now: Date, policy: CurtainPolicy) -> [Meeting] {
+        meetings.filter { !$0.isAllDay && $0.start <= now && now < $0.start.addingTimeInterval(policy.lateGrace) }
+    }
+
+    /// When the next meeting on the curtain starts, for its start alert.
+    public static func nextStart(onScreen meetings: [Meeting], now: Date) -> Date? {
+        meetings.filter { !$0.isAllDay && $0.start > now }.map(\.start).min()
+    }
+
     public static func plan(
         for meetings: [Meeting],
         now: Date,

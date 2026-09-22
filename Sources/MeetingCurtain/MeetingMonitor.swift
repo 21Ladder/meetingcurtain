@@ -1,5 +1,6 @@
 import AppKit
 @preconcurrency import EventKit
+import ServiceManagement
 import MeetingCurtainCore
 
 /// Keeps the upcoming meetings current, shows the curtain when one is due, and runs the self-check routine.
@@ -34,8 +35,13 @@ final class MeetingMonitor {
     private var chimed: Set<String> = []
     private var preflighted: Set<String> = []
     private var hasRunFirstCheck = false
-    private var lastSelfCheck = Date.distantPast
-    private var lastNotificationCheck = Date.distantPast
+    private var confirmingCritical = false
+    private var lastLoginStatus: SMAppService.Status?
+    /// Throttles use the monotonic clock, so setting the wall clock back can't stall or skip them.
+    private var lastSelfCheck: ContinuousClock.Instant?
+    private var lastNotificationCheck: ContinuousClock.Instant?
+    /// How many calendars the last refresh read, for the self-check.
+    private var watchedCalendarCount = 0
     /// `start()` runs the first self-check; until then nothing else should trigger one.
     private var nextRoutine = Date().addingTimeInterval(MeetingMonitor.routineInterval)
     private var lastAuthorization: EKAuthorizationStatus = .notDetermined
@@ -44,6 +50,7 @@ final class MeetingMonitor {
     private var calendarObserver: NSObjectProtocol?
     private var pendingRefresh: DispatchWorkItem?
     private var napActivity: NSObjectProtocol?
+    private var knownCalendars: Set<String> = []
 
     /// Called after every evaluation, e.g. so the menu bar icon can follow the health state.
     var onChange: (() -> Void)?
@@ -68,15 +75,12 @@ final class MeetingMonitor {
             MainActor.assumeIsolated { self?.scheduleRefresh() }
         }
 
-        if prefs.launchAtLogin, LoginItem.isInstalledInApplications { LoginItem.apply(enabled: true) }
-        // Arm the routine wake-up before anything below can wait on a permission prompt.
-        evaluate()
-
         if calendar.authorization == .notDetermined {
+            // Arm the routine wake-up and show "Calendar access needed" while the prompt waits.
+            checkNow()
             let granted = await calendar.requestAccess()
             log.notice("Calendar access \(granted ? "granted" : "denied", privacy: .public)")
         }
-        lastAuthorization = calendar.authorization
         await runSelfCheck()
         // Not awaited before the first check: an unanswered notification prompt must not hold up startup.
         if prefs.lockScreenAlerts, attention.notificationStatus == .notDetermined {
@@ -96,11 +100,16 @@ final class MeetingMonitor {
 
     // MARK: Refresh and evaluation
 
-    func refresh(reason: String) {
+    /// Fetches the meetings of the watched calendars. Callers that just read the calendars pass them in,
+    /// so EventKit is asked once per pass.
+    func refresh(reason: String, calendars known: [EKCalendar]? = nil) {
+        let selection = prefs.calendarSelection
+        let watched = (known ?? currentCalendars()).filter { selection.includes($0) }
+        watchedCalendarCount = watched.count
         let now = Date()
         // Look back as far as a meeting can still be announced late.
         fetchedFrom = now.addingTimeInterval(-prefs.policy.lateGrace)
-        meetings = calendar.meetings(from: fetchedFrom, to: now.addingTimeInterval(Self.horizon))
+        meetings = calendar.meetings(from: fetchedFrom, to: now.addingTimeInterval(Self.horizon), in: watched)
         log.info("Refreshed (\(reason, privacy: .public)): \(self.meetings.count) events in the next 24 h")
         evaluate(now: now)
     }
@@ -126,13 +135,26 @@ final class MeetingMonitor {
             }
         }
         shown.sort { $0.start < $1.start }
-        present(shown)
 
+        let fresh = shown.filter { !announced.contains($0.id) }
+        let freshIDs = Set(fresh.map(\.id))
         // Second alert when a meeting starts while its curtain is still up, e.g. you were away from the desk.
-        let startedOnScreen = curtain.meetings.filter { $0.start <= now && !$0.isAllDay && !chimed.contains($0.id) }
-        if !startedOnScreen.isEmpty {
-            chimed.formUnion(startedOnScreen.map(\.id))
-            attention.chime(prefs: prefs)
+        let startAlerts = Planner.startAlerts(onScreen: shown, now: now, policy: policy)
+            .filter { !chimed.contains($0.id) && !freshIDs.contains($0.id) }
+        // Whether an alert would reach the user is asked once, and only when there is one.
+        let readiness = fresh.isEmpty && startAlerts.isEmpty ? .ready : systemEvents?.alertReadiness() ?? .ready
+        if readiness == .ready {
+            present(shown, fresh: fresh, now: now)
+            if !startAlerts.isEmpty {
+                chimed.formUnion(startAlerts.map(\.id))
+                attention.chime(prefs: prefs)
+            }
+        } else {
+            // Dark wake (no display, no sound) or another user at the screen: an alert now would go unseen and
+            // be used up. The full wake or session switch re-evaluates. With the lid open (e.g. idle sleep at
+            // the desk), wake the Mac so the curtain can appear now.
+            if fresh.isEmpty { present(shown, fresh: [], now: now) }
+            if readiness == .darkWake(lidOpen: true) { attention.wakeDisplay() }
         }
 
         // Meetings still on screen count as live even when they are no longer fetched, so they
@@ -146,17 +168,17 @@ final class MeetingMonitor {
         onChange?()
     }
 
-    private func present(_ meetings: [Meeting]) {
+    /// Puts `meetings` on the curtain (or takes it down) and announces the `fresh` ones.
+    private func present(_ meetings: [Meeting], fresh: [Meeting], now: Date) {
         guard !meetings.isEmpty else {
             if curtain.isVisible { curtain.hide() }
             return
         }
-        let fresh = meetings.filter { !announced.contains($0.id) }
         curtain.show(meetings, bringToFront: !fresh.isEmpty)
         guard !fresh.isEmpty else { return }
         announced.formUnion(fresh.map(\.id))
         // Announced at or after its start: this alert already covers the start.
-        chimed.formUnion(fresh.filter { $0.start <= Date() }.map(\.id))
+        chimed.formUnion(fresh.filter { $0.start <= now }.map(\.id))
         attention.announce(fresh, prefs: prefs, screenLocked: systemEvents?.isScreenLocked ?? false)
         log.notice("Curtain shown for \(fresh.count) meeting(s)")
     }
@@ -175,7 +197,7 @@ final class MeetingMonitor {
             let preflight = next.date.addingTimeInterval(-Self.preflightLead)
             if preflight > now, !preflighted.contains(next.meeting.id) { wakes.append((preflight, 5)) }
         }
-        if let start = curtain.meetings.filter({ $0.start > now && !$0.isAllDay }).map(\.start).min() {
+        if let start = Planner.nextStart(onScreen: curtain.meetings, now: now) {
             wakes.append((start, 0.5))
         }
         wakes.sort { $0.date < $1.date }
@@ -212,7 +234,8 @@ final class MeetingMonitor {
         let imminent = plan.next.map { $0.date.timeIntervalSince(now) <= Self.preflightLead + 10 } ?? false
         if imminent, napActivity == nil {
             napActivity = ProcessInfo.processInfo.beginActivity(
-                options: .userInitiatedAllowingIdleSystemSleep, reason: "Meeting curtain due soon"
+                // Also keeps the Mac from idle-sleeping in these few minutes; closing the lid still sleeps.
+                options: .userInitiated, reason: "Meeting curtain due soon"
             )
         } else if !imminent, let activity = napActivity {
             ProcessInfo.processInfo.endActivity(activity)
@@ -225,26 +248,39 @@ final class MeetingMonitor {
     /// Runs the self-check unless one just ran: waking, unlocking and an overdue routine timer often
     /// arrive together, and one check covers them all. Otherwise it only re-evaluates.
     func requestSelfCheck(force: Bool = false) {
-        let now = Date()
-        guard force || now.timeIntervalSince(lastSelfCheck) > 10 else {
-            evaluate(now: now)
+        guard force || Self.hasElapsed(.seconds(10), since: lastSelfCheck) else {
+            evaluate()
             return
         }
-        lastSelfCheck = now
-        nextRoutine = now.addingTimeInterval(Self.routineInterval)
+        lastSelfCheck = .now
+        nextRoutine = Date().addingTimeInterval(Self.routineInterval)
         Task { await runSelfCheck() }
     }
 
+    private static func hasElapsed(_ duration: Duration, since instant: ContinuousClock.Instant?) -> Bool {
+        instant.map { ContinuousClock.now - $0 > duration } ?? true
+    }
+
     /// Re-verifies everything the curtain depends on, repairs what it can, and refreshes the calendar.
-    /// Each system service (calendar permission, calendars, login item) is queried once per run.
+    /// Only the notification permission is read asynchronously, before the check; the check itself is
+    /// synchronous, so an older result can never overwrite a newer one.
     func runSelfCheck() async {
-        let now = Date()
-        lastSelfCheck = now
-        nextRoutine = now.addingTimeInterval(Self.routineInterval)
+        // Notification permission rarely changes; re-read it hourly, or sooner when invalidated.
+        if prefs.lockScreenAlerts, Self.hasElapsed(.seconds(3600), since: lastNotificationCheck) {
+            lastNotificationCheck = .now
+            await attention.refreshNotificationStatus()
+        }
+        checkNow()
+    }
+
+    /// One self-check run. Each system service (calendar permission, calendars, login item) is queried once.
+    private func checkNow() {
+        lastSelfCheck = .now
+        nextRoutine = Date().addingTimeInterval(Self.routineInterval)
 
         let authorization = calendar.authorization
         if authorization != lastAuthorization {
-            // Access was granted or revoked in System Settings; drop anything the store cached.
+            // Access was granted or revoked; drop anything the store cached.
             log.notice("Calendar authorization changed to \(authorization.rawValue)")
             lastAuthorization = authorization
             calendar.reset()
@@ -255,26 +291,16 @@ final class MeetingMonitor {
             calendar.reset()
             calendars = calendar.eventCalendars()
         }
+        knownCalendars = Set(calendars.map(\.calendarIdentifier))
 
-        // Only the installed copy registers itself, so a build-folder copy never leaves a stray login item.
-        var loginStatus = LoginItem.status
-        if prefs.launchAtLogin, LoginItem.isInstalledInApplications,
-           loginStatus == .notRegistered || loginStatus == .notFound {
-            LoginItem.apply(enabled: true)
-            loginStatus = LoginItem.status
-        }
-
-        refresh(reason: "self-check")
-        // Notification permission rarely changes; re-read it at launch and on wake, not every routine run.
-        if prefs.lockScreenAlerts, now.timeIntervalSince(lastNotificationCheck) > 3600 {
-            lastNotificationCheck = now
-            await attention.refreshNotificationStatus()
-        }
+        let loginStatus = checkLoginItem()
+        refresh(reason: "self-check", calendars: calendars)
 
         let before = health.overall
         health.evaluate(HealthMonitor.Inputs(
             calendarAuthorization: authorization,
             calendarCount: calendars.count,
+            watchedCalendars: watchedCalendarCount,
             onlineAccounts: CalendarService.onlineAccounts(in: calendars),
             wantsLaunchAtLogin: prefs.launchAtLogin,
             loginItemStatus: loginStatus,
@@ -286,20 +312,55 @@ final class MeetingMonitor {
         ))
         health.updateSchedule(next: realNext(), upcomingCount: upcoming.count)
         onChange?()
-        if hasRunFirstCheck, before < .critical, health.overall == .critical { onCritical?() }
+        if hasRunFirstCheck, before < .critical, health.overall == .critical { confirmCritical() }
         hasRunFirstCheck = true
+    }
+
+    /// Re-registers a login item that went missing, but respects one the user removed in System Settings
+    /// while the app was running. Only the installed copy registers itself, so a build-folder copy never
+    /// leaves a stray login item.
+    private func checkLoginItem() -> SMAppService.Status {
+        var status = LoginItem.status
+        defer { lastLoginStatus = status }
+        guard prefs.launchAtLogin, LoginItem.isInstalledInApplications else { return status }
+        if lastLoginStatus == .enabled, status == .notRegistered {
+            log.notice("Login item removed in System Settings; turning launch at login off")
+            prefs.launchAtLogin = false
+        } else if status == .notRegistered || status == .notFound {
+            LoginItem.apply(enabled: true)
+            status = LoginItem.status
+        }
+        return status
+    }
+
+    /// A single empty calendar read (e.g. right after wake or login, or while the calendar daemon restarts)
+    /// must not pop up Settings; only a problem that is still there 20 s later does.
+    func confirmCritical() {
+        guard !confirmingCritical else { return }
+        confirmingCritical = true
+        Task {
+            try? await Task.sleep(for: .seconds(20))
+            confirmingCritical = false
+            checkNow()
+            if health.overall == .critical { onCritical?() }
+        }
     }
 
     /// Makes the next self-check re-read notification permission, e.g. after the user may have changed it.
     func invalidateNotificationStatus() {
-        lastNotificationCheck = .distantPast
+        lastNotificationCheck = nil
     }
 
-    /// Cheap check for the menu: picks up calendar access granted in System Settings right away.
-    func checkAuthorizationChange() {
-        if calendar.authorization != lastAuthorization {
-            requestSelfCheck(force: true)
-        }
+    /// Picks up calendar access granted or revoked in System Settings right away (also used by the menu).
+    @discardableResult
+    func checkAuthorizationChange() -> EKAuthorizationStatus {
+        let authorization = calendar.authorization
+        if authorization != lastAuthorization { requestSelfCheck(force: true) }
+        return authorization
+    }
+
+    private func currentCalendars() -> [EKCalendar] {
+        checkAuthorizationChange() == .fullAccess ? calendar.eventCalendars() : []
     }
 
     func perform(_ fix: HealthCheck.Fix) {
@@ -324,7 +385,7 @@ final class MeetingMonitor {
                 await runSelfCheck()
             }
         case .openNotificationSettings:
-            let id = Bundle.main.bundleIdentifier ?? ""
+            let id = Bundle.main.bundleIdentifier ?? appID
             openSettings("x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)")
         }
     }
@@ -347,16 +408,18 @@ final class MeetingMonitor {
             DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
                 MainActor.assumeIsolated { self?.calendar.requestSync() }
             }
-        case .unlocked, .sessionActive:
+        case .unlocked, .sessionActive, .screensDidWake:
             // Calendar changes keep arriving while locked, so the data is current; no fetch needed.
             updateCurtainLiveness()
             evaluate()
-            if curtain.isVisible { curtain.bringToFront() }
-        case .screensDidWake:
+        case .screensDidSleep:
             updateCurtainLiveness()
-            evaluate()
-        case .screensDidSleep, .locked:
+        case .locked:
             updateCurtainLiveness()
+            // The screen locked while a curtain was up (e.g. you walked away): put it on the lock screen too.
+            if curtain.isVisible, prefs.lockScreenAlerts { attention.notify(curtain.meetings) }
+        case .willSleep:
+            break
         case .clockChanged:
             // After the clock is set back, the routine check must not wait for the old wall-clock time.
             nextRoutine = min(nextRoutine, Date().addingTimeInterval(Self.routineInterval))
@@ -366,24 +429,35 @@ final class MeetingMonitor {
         }
     }
 
-    /// Freezes the curtain's ticking countdown while nobody can see it.
     private func updateCurtainLiveness() {
-        let hidden = systemEvents.map { $0.isScreenLocked || $0.areScreensAsleep } ?? false
-        if curtain.model.isLive == hidden { curtain.model.isLive = !hidden }
+        curtain.setLive(!(systemEvents.map { $0.isScreenLocked || $0.areScreensAsleep } ?? false))
     }
 
     /// Calendar syncs often post several change notifications in a burst; handle them once.
     private func scheduleRefresh() {
         pendingRefresh?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.refresh(reason: "calendar changed") }
+            MainActor.assumeIsolated { self?.calendarStoreChanged() }
         }
         pendingRefresh = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
     }
 
+    /// Accounts or calendars added, removed or re-enabled show up only here; re-run the self-check for
+    /// those right away instead of at the next routine run.
+    private func calendarStoreChanged() {
+        let calendars = currentCalendars()
+        if Set(calendars.map(\.calendarIdentifier)) != knownCalendars {
+            requestSelfCheck(force: true)
+        } else {
+            refresh(reason: "calendar changed", calendars: calendars)
+        }
+    }
+
     func preferencesChanged(_ key: Preferences.Key) {
         switch key {
+        case .calendarChoices:
+            requestSelfCheck(force: true)
         case .leadMinutes, .includeAllDay, .skipDeclined:
             evaluate()
         case .playSound, .soundName:
@@ -416,6 +490,24 @@ final class MeetingMonitor {
             announced.remove(other.id)
         }
         close(dismissing: [meeting])
+    }
+
+    /// Opens the call from the menu. Shortly before or during the meeting that counts as joining, so its
+    /// curtain doesn't cover the call; opening a link hours ahead leaves the reminder in place.
+    func openFromMenu(_ meeting: Meeting) {
+        guard let url = meeting.joinURL else { return }
+        guard meeting.start.timeIntervalSinceNow <= max(prefs.policy.leadTime, 15 * 60) else {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        if curtain.meetings.contains(where: { $0.id == meeting.id }) {
+            join(meeting)
+        } else {
+            NSWorkspace.shared.open(url)
+            state.dismiss(meeting)
+            saveDismissed()
+            evaluate()
+        }
     }
 
     func snoozeVisible() {
@@ -461,8 +553,9 @@ final class MeetingMonitor {
     // MARK: Persistence
 
     private static func loadDismissed() -> [String: Date] {
-        let raw = UserDefaults.standard.dictionary(forKey: dismissedKey) as? [String: Double] ?? [:]
-        return raw.mapValues(Date.init(timeIntervalSince1970:))
+        // Tolerate a stray non-number value instead of losing every dismissal.
+        let raw = UserDefaults.standard.dictionary(forKey: dismissedKey) ?? [:]
+        return raw.compactMapValues { ($0 as? NSNumber)?.doubleValue }.mapValues(Date.init(timeIntervalSince1970:))
     }
 
     private func saveDismissed() {

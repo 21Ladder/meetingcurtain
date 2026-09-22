@@ -59,6 +59,7 @@ final class HealthMonitor {
     struct Inputs {
         var calendarAuthorization: EKAuthorizationStatus
         var calendarCount: Int
+        var watchedCalendars: Int
         var onlineAccounts: [CalendarService.Account]
         var wantsLaunchAtLogin: Bool
         var loginItemStatus: SMAppService.Status
@@ -91,7 +92,8 @@ final class HealthMonitor {
 
         if result != checks {
             for check in result where check.status >= .warning {
-                log.notice("Self-check: \(check.title, privacy: .public) — \(check.detail, privacy: .public)")
+                // The detail can name accounts (your email address), so only the title is logged in the clear.
+                log.notice("Self-check: \(check.title, privacy: .public) — \(check.detail, privacy: .private)")
             }
         }
         checks = result
@@ -120,14 +122,23 @@ final class HealthMonitor {
                                fix: .openInternetAccounts)
         }
         guard !inputs.onlineAccounts.isEmpty else {
-            return HealthCheck(kind: .googleCalendar, status: .warning, title: "Google account not connected",
+            // iCloud, Birthdays or Siri Suggestions keep calendarCount above zero after Google is removed,
+            // so this is the case that actually stops Google curtains.
+            return HealthCheck(kind: .googleCalendar, status: .critical, title: "No calendar account connected",
                                detail: "Only local or iCloud calendars were found. Add your Google account in Internet Accounts.",
                                fix: .openInternetAccounts)
+        }
+        guard inputs.watchedCalendars > 0 else {
+            return HealthCheck(kind: .googleCalendar, status: .critical, title: "No calendars selected",
+                               detail: "Turn on at least one calendar under Calendars.")
         }
         let accounts = inputs.onlineAccounts
             .map { "\($0.title) (\($0.calendars) calendar\($0.calendars == 1 ? "" : "s"))" }
             .joined(separator: ", ")
-        return HealthCheck(kind: .googleCalendar, status: .ok, title: "Google account connected", detail: accounts)
+        // EventKit can't tell whether macOS still syncs (e.g. Google needs you to sign in again).
+        // Accounts are listed by name: EventKit can't tell a Google account from other CalDAV accounts.
+        return HealthCheck(kind: .googleCalendar, status: .ok, title: "Calendar account connected",
+                           detail: "\(accounts). Watching \(inputs.watchedCalendars) of \(inputs.calendarCount) calendars. If events look outdated, check Calendar for a ⚠︎ next to the account.")
     }
 
     /// Keeps the "next curtain" line current; called after every evaluation, so it must stay cheap.
@@ -154,6 +165,10 @@ final class HealthMonitor {
             return HealthCheck(kind: .launchAtLogin, status: .info, title: "Launch at login is off",
                                detail: "After a restart you won't get curtains until you open the app yourself.",
                                fix: .enableLaunchAtLogin)
+        }
+        guard inputs.installedInApplications else {
+            return HealthCheck(kind: .launchAtLogin, status: .info, title: "Launch at login not set up here",
+                               detail: "Only the copy in ~/Applications registers itself (./build.sh install).")
         }
         switch inputs.loginItemStatus {
         case .enabled:

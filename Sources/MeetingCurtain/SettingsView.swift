@@ -1,10 +1,20 @@
 import AppKit
+import EventKit
 import SwiftUI
+import MeetingCurtainCore
 
 struct SettingsView: View {
     @Bindable var prefs: Preferences
     let health: HealthMonitor
     let monitor: MeetingMonitor
+
+    /// Read once and when the calendar store changes, not on every redraw.
+    @State private var calendars: [CalendarInfo] = []
+
+    private func loadCalendars() {
+        calendars = monitor.calendar.eventCalendars().map(CalendarInfo.init)
+            .sorted { ($0.account, $0.title) < ($1.account, $1.title) }
+    }
 
     var body: some View {
         Form {
@@ -23,6 +33,23 @@ struct SettingsView: View {
                 LabeledContent("Preview") {
                     Button("Show Test Curtain") { monitor.showTestCurtain() }
                 }
+            }
+
+            Section {
+                ForEach(calendars, id: \.id) { info in
+                    Toggle(isOn: Binding(
+                        get: { prefs.calendarSelection.includes(info) },
+                        set: { prefs.calendarSelection.set($0, for: info) }
+                    )) {
+                        Text(info.title)
+                        Text(info.account)
+                    }
+                }
+            } header: {
+                Text("Calendars")
+            } footer: {
+                Text("On by default: calendars you can edit. Calendars you can only view, subscriptions and Birthdays are off. A colleague's calendar shared with you with edit rights looks like your own, so check the list once. Hiding a calendar in the Calendar app doesn't hide it here.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
 
             Section("Getting your attention") {
@@ -70,6 +97,8 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 520, height: 720)
+        .task { loadCalendars() }
+        .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in loadCalendars() }
     }
 }
 
@@ -110,7 +139,8 @@ private struct CheckRow: View {
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let makeContent: () -> SettingsView
-    var onShow: (() -> Void)?
+    /// Runs whenever the window comes to the front, e.g. after fixing something in System Settings.
+    var onFocus: (() -> Void)?
 
     init(makeContent: @escaping () -> SettingsView) {
         self.makeContent = makeContent
@@ -126,9 +156,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             window.center()
             self.window = window
         }
-        onShow?()
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
+        // Activation is only a request; make sure the window is at least visible when it's refused.
+        window?.orderFrontRegardless()
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        onFocus?()
     }
 
     func windowWillClose(_ notification: Notification) {
