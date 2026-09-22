@@ -4,7 +4,8 @@ import Foundation
 public struct CurtainPolicy: Sendable, Equatable {
     /// How long before the start the curtain appears.
     public var leadTime: TimeInterval
-    /// How long after the start a meeting is still announced, e.g. when the Mac wakes up late.
+    /// How long after the start a meeting is still announced, e.g. when you open the lid late.
+    /// Never past the meeting's end.
     public var lateGrace: TimeInterval
     public var includeAllDay: Bool
     public var skipDeclined: Bool
@@ -13,7 +14,7 @@ public struct CurtainPolicy: Sendable, Equatable {
 
     public init(
         leadTime: TimeInterval = 120,
-        lateGrace: TimeInterval = 600,
+        lateGrace: TimeInterval = 30 * 60,
         includeAllDay: Bool = false,
         skipDeclined: Bool = false,
         allDayHour: Int = 9
@@ -28,7 +29,7 @@ public struct CurtainPolicy: Sendable, Equatable {
 
 /// What the user decided about individual meeting occurrences.
 public struct ReminderState: Sendable, Equatable {
-    /// Meeting id → meeting start, kept so old entries can be pruned.
+    /// Meeting id → when the meeting ends, kept so old entries can be pruned.
     public private(set) var dismissed: [String: Date]
     public private(set) var snoozedUntil: [String: Date]
 
@@ -40,7 +41,8 @@ public struct ReminderState: Sendable, Equatable {
     public func isDismissed(_ id: String) -> Bool { dismissed[id] != nil }
 
     public mutating func dismiss(_ meeting: Meeting) {
-        dismissed[meeting.id] = meeting.start
+        // Keyed by the end, so a dismissed multi-day event isn't pruned (and shown again) while it lasts.
+        dismissed[meeting.id] = max(meeting.start, meeting.end)
         snoozedUntil[meeting.id] = nil
     }
 
@@ -96,7 +98,8 @@ public enum Planner {
         if meeting.isAllDay {
             // Announce once on the first day, from `allDayHour` until the event ends.
             let day = calendar.startOfDay(for: meeting.start)
-            opens = calendar.date(byAdding: .hour, value: policy.allDayHour, to: day) ?? meeting.start
+            // Setting the clock hour (not adding hours) keeps it right on daylight-saving days.
+            opens = calendar.date(bySettingHour: policy.allDayHour, minute: 0, second: 0, of: day) ?? meeting.start
             end = meeting.end > opens ? meeting.end : opens.addingTimeInterval(policy.lateGrace)
             closes = end
         } else {

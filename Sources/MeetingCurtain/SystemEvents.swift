@@ -5,10 +5,11 @@ import CoreGraphics
 @MainActor
 final class SystemEvents {
     enum Event {
-        case didWake, screensDidWake, locked, unlocked, sessionActive, clockChanged, screensChanged
+        case didWake, screensDidWake, screensDidSleep, locked, unlocked, sessionActive, clockChanged, screensChanged
     }
 
     private(set) var isScreenLocked: Bool
+    private(set) var areScreensAsleep = false
     private var tokens: [(NotificationCenter, NSObjectProtocol)] = []
 
     init(handler: @escaping @MainActor (Event) -> Void) {
@@ -19,6 +20,7 @@ final class SystemEvents {
         let observed: [(NotificationCenter, Notification.Name, Event)] = [
             (workspace, NSWorkspace.didWakeNotification, .didWake),
             (workspace, NSWorkspace.screensDidWakeNotification, .screensDidWake),
+            (workspace, NSWorkspace.screensDidSleepNotification, .screensDidSleep),
             (workspace, NSWorkspace.sessionDidBecomeActiveNotification, .sessionActive),
             (.default, .NSSystemClockDidChange, .clockChanged),
             (.default, .NSSystemTimeZoneDidChange, .clockChanged),
@@ -33,6 +35,8 @@ final class SystemEvents {
                     switch event {
                     case .locked: self.isScreenLocked = true
                     case .unlocked: self.isScreenLocked = false
+                    case .screensDidSleep: self.areScreensAsleep = true
+                    case .screensDidWake, .didWake: self.areScreensAsleep = false
                     default: break
                     }
                     handler(event)

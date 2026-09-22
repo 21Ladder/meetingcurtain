@@ -120,14 +120,14 @@ final class HealthMonitor {
                                fix: .openInternetAccounts)
         }
         guard !inputs.onlineAccounts.isEmpty else {
-            return HealthCheck(kind: .googleCalendar, status: .warning, title: "Google calendar not synced",
+            return HealthCheck(kind: .googleCalendar, status: .warning, title: "Google account not connected",
                                detail: "Only local or iCloud calendars were found. Add your Google account in Internet Accounts.",
                                fix: .openInternetAccounts)
         }
         let accounts = inputs.onlineAccounts
             .map { "\($0.title) (\($0.calendars) calendar\($0.calendars == 1 ? "" : "s"))" }
             .joined(separator: ", ")
-        return HealthCheck(kind: .googleCalendar, status: .ok, title: "Google calendar synced", detail: accounts)
+        return HealthCheck(kind: .googleCalendar, status: .ok, title: "Google account connected", detail: accounts)
     }
 
     /// Keeps the "next curtain" line current; called after every evaluation, so it must stay cheap.
@@ -189,7 +189,7 @@ final class HealthMonitor {
                                detail: "Needed to alert you while the Mac is locked.", fix: .requestNotifications)
         default:
             return HealthCheck(kind: .notifications, status: .warning, title: "Notifications are off",
-                               detail: "Turn on notifications for MeetingCurtain to get alerts on the lock screen.",
+                               detail: "Allow them for lock-screen alerts, or turn off \"Notify on the lock screen\" in Settings.",
                                fix: .openNotificationSettings)
         }
     }

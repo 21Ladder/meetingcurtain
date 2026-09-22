@@ -57,11 +57,32 @@ final class StatusMenuController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(healthItem())
-        menu.addItem(ActionItem("Run Self-Check Now") { [monitor] in Task { await monitor.runSelfCheck() } })
-        menu.addItem(ActionItem("Show Test Curtain") { [monitor] in monitor.showTestCurtain() })
+        menu.addItem(ActionItem("Run Self-Check Now") { [monitor] in
+            monitor.invalidateNotificationStatus()
+            monitor.requestSelfCheck(force: true)
+        })
+        // Delayed, so you can go back to what you were doing and see it arrive like a real reminder.
+        menu.addItem(ActionItem("Show Test Curtain in 5 Seconds") { [monitor] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                MainActor.assumeIsolated { monitor.showTestCurtain() }
+            }
+        })
         menu.addItem(.separator())
         menu.addItem(ActionItem("Settings…", key: ",") { [openSettings] in openSettings() })
-        menu.addItem(ActionItem("Quit MeetingCurtain", key: "q") { NSApp.terminate(nil) })
+        menu.addItem(ActionItem("Quit MeetingCurtain…", key: "q") { Self.confirmQuit() })
+    }
+
+    /// Quitting silently stops all reminders until the next login, so ask first.
+    private static func confirmQuit() {
+        let alert = NSAlert()
+        alert.messageText = "Quit MeetingCurtain?"
+        alert.informativeText = "You won't get meeting reminders until you open MeetingCurtain again or log in next time."
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSApp.terminate(nil)
+        }
     }
 
     private func item(for meeting: Meeting, now: Date) -> NSMenuItem {

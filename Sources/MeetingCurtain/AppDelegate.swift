@@ -19,11 +19,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = SettingsWindowController {
             SettingsView(prefs: prefs, health: monitor.health, monitor: monitor)
         }
-        settings.onShow = { Task { await monitor.runSelfCheck() } }
+        settings.onShow = {
+            monitor.invalidateNotificationStatus()
+            monitor.requestSelfCheck()
+        }
         let statusMenu = StatusMenuController(monitor: monitor) { settings.show() }
 
         prefs.onChange = { [weak monitor] key in monitor?.preferencesChanged(key) }
         monitor.onChange = { [weak statusMenu] in statusMenu?.updateIcon() }
+        monitor.onCritical = { [weak settings] in settings?.show() }
 
         self.monitor = monitor
         self.settings = settings

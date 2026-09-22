@@ -17,6 +17,22 @@ final class Attention {
         wakeDisplay()
         if prefs.playSound { play(prefs.soundName) }
         if screenLocked && prefs.lockScreenAlerts { notify(meetings) }
+        if let first = meetings.first { speak("\(first.title). \(Self.startDescription(first))") }
+    }
+
+    /// Second alert when a meeting actually starts while its curtain is still up (e.g. you were away).
+    func chime(prefs: Preferences) {
+        wakeDisplay()
+        if prefs.playSound { play(prefs.soundName) }
+    }
+
+    /// VoiceOver reads this even though keyboard focus stays in the app you were using.
+    private func speak(_ text: String) {
+        NSAccessibility.post(
+            element: NSApp as Any,
+            notification: .announcementRequested,
+            userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue]
+        )
     }
 
     func play(_ name: String) {

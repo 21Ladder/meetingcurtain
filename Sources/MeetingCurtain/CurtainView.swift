@@ -4,6 +4,10 @@ import MeetingCurtainCore
 @MainActor @Observable
 final class CurtainModel {
     var meetings: [Meeting] = []
+    /// False for a moment after the curtain appears; see `CurtainController.inputGuard`.
+    var acceptsInput = true
+    /// False while the display sleeps or the screen is locked; the countdown then stops ticking.
+    var isLive = true
     @ObservationIgnored var onJoin: @MainActor (Meeting) -> Void = { _ in }
     @ObservationIgnored var onSnooze: @MainActor () -> Void = {}
     @ObservationIgnored var onDismiss: @MainActor () -> Void = {}
@@ -58,13 +62,15 @@ private struct CurtainContent: View {
                     .padding(.top, 20 * scale)
                 details
                     .padding(.top, 18 * scale)
-                Countdown(meeting: primary, scale: scale)
+                Countdown(meeting: primary, isLive: model.isLive, scale: scale)
                     .padding(.top, 40 * scale)
                 actions
                     .padding(.top, 48 * scale)
+                    .disabled(!model.acceptsInput)
                 if !others.isEmpty {
                     othersList
                         .padding(.top, 44 * scale)
+                        .disabled(!model.acceptsInput)
                 }
                 Spacer(minLength: 0)
             }
@@ -113,7 +119,7 @@ private struct CurtainContent: View {
             .buttonStyle(CurtainButtonStyle(fill: .white.opacity(0.14), darkText: false, scale: scale))
             .keyboardShortcut("s", modifiers: [])
             Button { model.onDismiss() } label: {
-                ButtonLabel(title: "Dismiss", symbol: "xmark", key: "esc", scale: scale)
+                ButtonLabel(title: others.isEmpty ? "Dismiss" : "Dismiss all", symbol: "xmark", key: "esc", scale: scale)
             }
             .buttonStyle(CurtainButtonStyle(fill: .white.opacity(0.14), darkText: false, scale: scale))
             .keyboardShortcut(.cancelAction)
@@ -170,6 +176,7 @@ private struct CurtainContent: View {
 /// itself; the body is re-evaluated only once, when the meeting starts.
 private struct Countdown: View {
     let meeting: Meeting
+    let isLive: Bool
     let scale: CGFloat
     @State private var reachedStartID: String?
 
@@ -185,12 +192,14 @@ private struct Countdown: View {
                 if meeting.isAllDay {
                     Text("Today")
                 } else if started {
+                    // Stops at the meeting's end, so a curtain left up while you're away doesn't tick forever.
                     HStack(spacing: 0) {
                         Text("+")
-                        Text(timerInterval: meeting.start...meeting.start.addingTimeInterval(86_400), countsDown: false)
+                        Text(timerInterval: meeting.start...meeting.start.addingTimeInterval(86_400),
+                             pauseTime: isLive ? max(meeting.end, now) : now, countsDown: false)
                     }
                 } else {
-                    Text(timerInterval: now...meeting.start, countsDown: true)
+                    Text(timerInterval: now...meeting.start, pauseTime: isLive ? nil : now, countsDown: true)
                 }
             }
             .font(.system(size: 168 * scale, weight: .semibold, design: .rounded).monospacedDigit())

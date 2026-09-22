@@ -11,6 +11,9 @@ final class CalendarService {
     }
 
     let store = EKEventStore()
+    /// Join links by occurrence id, reused while the event is unmodified: scanning notes is the
+    /// most expensive part of a refresh.
+    private var linkCache: [String: (modified: Date, link: URL?)] = [:]
 
     var authorization: EKAuthorizationStatus { EKEventStore.authorizationStatus(for: .event) }
     var hasAccess: Bool { authorization == .fullAccess }
@@ -24,23 +27,45 @@ final class CalendarService {
         }
     }
 
-    /// Event occurrences overlapping the range, soonest first. Cancelled events are left out.
+    /// Event occurrences overlapping the range, soonest first. Cancelled events are left out, and an event
+    /// that appears in several calendars (e.g. your own and a shared one) is listed once.
     func meetings(from start: Date, to end: Date) -> [Meeting] {
         guard hasAccess else { return [] }
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
-        return store.events(matching: predicate)
-            .compactMap(Meeting.init(event:))
-            .sorted { $0.start < $1.start }
+        var cache: [String: (modified: Date, link: URL?)] = [:]
+        var seen = Set<String>()
+        var result: [Meeting] = []
+        for event in store.events(matching: predicate) {
+            guard event.status != .canceled, let start = event.startDate else { continue }
+            let id = Meeting.occurrenceID(eventID: Self.stableID(of: event), start: start)
+            guard seen.insert(id).inserted else { continue }
+            let link: URL?
+            if let modified = event.lastModifiedDate, let cached = linkCache[id], cached.modified == modified {
+                link = cached.link
+            } else {
+                link = MeetingLinks.joinURL(url: event.url, location: event.location, notes: event.notes)
+            }
+            if let modified = event.lastModifiedDate { cache[id] = (modified, link) }
+            if let meeting = Meeting(event: event, id: id, joinURL: link) { result.append(meeting) }
+        }
+        linkCache = cache
+        return result.sorted { $0.start < $1.start }
     }
 
-    var calendarCount: Int { hasAccess ? store.calendars(for: .event).count : 0 }
+    /// The server's identifier survives syncs and calendar moves; `eventIdentifier` can change then.
+    static func stableID(of event: EKEvent) -> String {
+        event.calendarItemExternalIdentifier ?? event.eventIdentifier ?? event.calendarItemIdentifier
+    }
+
+    func eventCalendars() -> [EKCalendar] {
+        store.calendars(for: .event)
+    }
 
     /// Online accounts (Google, Exchange, other CalDAV) with their number of event calendars. iCloud and
-    /// on-my-Mac calendars are not counted, so an empty result means the Google account is not synced.
-    func onlineAccounts() -> [Account] {
-        guard hasAccess else { return [] }
+    /// on-my-Mac calendars are not counted, so an empty result means the Google account is not connected.
+    static func onlineAccounts(in calendars: [EKCalendar]) -> [Account] {
         var counts: [String: Int] = [:]
-        for calendar in store.calendars(for: .event) {
+        for calendar in calendars {
             guard let source = calendar.source else { continue }
             let online = source.sourceType == .exchange
                 || (source.sourceType == .calDAV && source.title.caseInsensitiveCompare("iCloud") != .orderedSame)
@@ -63,14 +88,13 @@ final class CalendarService {
 }
 
 extension Meeting {
-    init?(event: EKEvent) {
-        guard event.status != .canceled, let start = event.startDate, let end = event.endDate else { return nil }
-        let eventID = event.eventIdentifier ?? event.calendarItemIdentifier
+    init?(event: EKEvent, id: String, joinURL: URL?) {
+        guard let start = event.startDate, let end = event.endDate else { return nil }
         let title = event.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let location = event.location?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let declined = event.attendees?.contains { $0.isCurrentUser && $0.participantStatus == .declined } ?? false
         self.init(
-            id: Meeting.occurrenceID(eventID: eventID, start: start),
+            id: id,
             title: title.isEmpty ? "Untitled event" : title,
             start: start,
             end: end,
@@ -79,7 +103,7 @@ extension Meeting {
             calendarTitle: event.calendar?.title ?? "",
             color: CalendarColor(event.calendar?.color),
             location: location.isEmpty ? nil : location,
-            joinURL: MeetingLinks.joinURL(url: event.url, location: event.location, notes: event.notes)
+            joinURL: joinURL
         )
     }
 }

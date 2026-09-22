@@ -62,13 +62,13 @@ private func plan(_ meetings: [Meeting], at offsetMinutes: Double = 0, policy: C
         #expect(plan([meeting("a", startsIn: 0)], policy: policy).due.count == 1)
     }
 
-    @Test func stillAnnouncedShortlyAfterStart() {
-        // e.g. the Mac woke up five minutes into the meeting.
-        #expect(plan([meeting("a", startsIn: -5)]).due.count == 1)
+    @Test func stillAnnouncedAfterStart() {
+        // e.g. the lid was opened twelve minutes into an hour-long meeting.
+        #expect(plan([meeting("a", startsIn: -12, length: 60)]).due.count == 1)
     }
 
     @Test func notAnnouncedLongAfterStart() {
-        let result = plan([meeting("a", startsIn: -11)])
+        let result = plan([meeting("a", startsIn: -31, length: 60)])
         #expect(result.due.isEmpty)
         #expect(result.next == nil)
     }
@@ -97,7 +97,7 @@ private func plan(_ meetings: [Meeting], at offsetMinutes: Double = 0, policy: C
     }
 
     @Test func snoozeWorksPastLateGrace() {
-        let a = meeting("a", startsIn: -9, length: 60)
+        let a = meeting("a", startsIn: -29, length: 60)
         var state = ReminderState()
         state.snooze(a, until: base.addingTimeInterval(60))
         #expect(plan([a], at: 1.5, state: state).due.count == 1)
@@ -137,6 +137,28 @@ private func plan(_ meetings: [Meeting], at offsetMinutes: Double = 0, policy: C
         #expect(early.next?.date == day.addingTimeInterval(9 * 3600))
         let afternoon = Planner.plan(for: [holiday], now: day.addingTimeInterval(15 * 3600), policy: policy, state: .init(), calendar: utc)
         #expect(afternoon.due.count == 1)
+    }
+
+    @Test func dismissedMultiDayEventStaysDismissed() {
+        let day = utc.startOfDay(for: base)
+        let vacation = Meeting(id: "v", title: "Vacation", start: day, end: day.addingTimeInterval(5 * 86_400), isAllDay: true)
+        var state = ReminderState()
+        state.dismiss(vacation)
+        let dayThree = day.addingTimeInterval(3 * 86_400 + 10 * 3600)
+        state.prune(now: dayThree)
+        let result = Planner.plan(for: [vacation], now: dayThree, policy: CurtainPolicy(includeAllDay: true), state: state, calendar: utc)
+        #expect(result.due.isEmpty)
+    }
+
+    @Test func allDayHourIsClockTimeOnDaylightSavingDays() {
+        var vienna = Calendar(identifier: .gregorian)
+        vienna.timeZone = TimeZone(identifier: "Europe/Vienna")!
+        for date in ["2026-03-29", "2026-10-25"] {
+            let day = vienna.date(from: DateComponents(year: Int(date.prefix(4)), month: Int(date.dropFirst(5).prefix(2)), day: Int(date.suffix(2))))!
+            let event = Meeting(id: date, title: "DST", start: day, end: vienna.date(byAdding: .day, value: 1, to: day)!, isAllDay: true)
+            let opens = Planner.window(for: event, policy: CurtainPolicy(includeAllDay: true), state: .init(), calendar: vienna).opens
+            #expect(vienna.component(.hour, from: opens) == 9)
+        }
     }
 
     @Test func zeroLengthEventsStillAnnounced() {

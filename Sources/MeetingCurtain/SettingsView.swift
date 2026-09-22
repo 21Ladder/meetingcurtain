@@ -56,8 +56,11 @@ struct SettingsView: View {
                         Text("Last run \(lastRun.formatted(date: .omitted, time: .shortened))")
                             .foregroundStyle(.secondary)
                     }
-                    Button("Run Now") { Task { await monitor.runSelfCheck() } }
-                        .controlSize(.small)
+                    Button("Run Now") {
+                        monitor.invalidateNotificationStatus()
+                        monitor.requestSelfCheck(force: true)
+                    }
+                    .controlSize(.small)
                 }
             } footer: {
                 Text("Runs by itself at launch, after waking up, every 15 minutes, and syncs Google 3 minutes before each curtain. Repairs the login item and calendar data automatically when it can.")
