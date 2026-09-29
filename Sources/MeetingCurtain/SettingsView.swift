@@ -98,7 +98,11 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 520, height: 720)
         .task { loadCalendars() }
-        .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in loadCalendars() }
+        // EventKit may post this off the main thread, and syncs post it in bursts.
+        .onReceive(
+            NotificationCenter.default.publisher(for: .EKEventStoreChanged)
+                .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
+        ) { _ in loadCalendars() }
     }
 }
 

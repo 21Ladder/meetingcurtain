@@ -103,8 +103,16 @@ final class MeetingMonitor {
     /// Fetches the meetings of the watched calendars. Callers that just read the calendars pass them in,
     /// so EventKit is asked once per pass.
     func refresh(reason: String, calendars known: [EKCalendar]? = nil) {
+        let calendars = known ?? currentCalendars()
+        if calendars.isEmpty, calendar.hasAccess, !meetings.isEmpty {
+            // EventKit briefly returns no calendars at all (wake, login, daemon restart). Keep the last good
+            // events so a curtain on screen isn't taken down and announced again when they come back.
+            log.info("Refresh (\(reason, privacy: .public)) returned no calendars; keeping previous events")
+            evaluate()
+            return
+        }
         let selection = prefs.calendarSelection
-        let watched = (known ?? currentCalendars()).filter { selection.includes($0) }
+        let watched = calendars.filter { selection.includes($0) }
         watchedCalendarCount = watched.count
         let now = Date()
         // Look back as far as a meeting can still be announced late.
@@ -249,6 +257,9 @@ final class MeetingMonitor {
     /// arrive together, and one check covers them all. Otherwise it only re-evaluates.
     func requestSelfCheck(force: Bool = false) {
         guard force || Self.hasElapsed(.seconds(10), since: lastSelfCheck) else {
+            // An overdue routine (e.g. the wall clock jumped forward) must not re-arm the timer for "now"
+            // over and over while throttled.
+            nextRoutine = max(nextRoutine, Date().addingTimeInterval(10))
             evaluate()
             return
         }
@@ -417,7 +428,11 @@ final class MeetingMonitor {
         case .locked:
             updateCurtainLiveness()
             // The screen locked while a curtain was up (e.g. you walked away): put it on the lock screen too.
-            if curtain.isVisible, prefs.lockScreenAlerts { attention.notify(curtain.meetings) }
+            if curtain.isVisible, prefs.lockScreenAlerts {
+                let now = Date()
+                let current = curtain.meetings.filter { $0.end > now }
+                if !current.isEmpty { attention.notify(current) }
+            }
         case .willSleep:
             break
         case .clockChanged:

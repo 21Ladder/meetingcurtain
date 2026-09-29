@@ -21,7 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         settings.onFocus = {
             monitor.invalidateNotificationStatus()
-            monitor.requestSelfCheck(force: true)
+            // Not forced: switching windows back and forth shouldn't re-read everything each time.
+            monitor.requestSelfCheck()
         }
         let statusMenu = StatusMenuController(monitor: monitor) { settings.show() }
 
