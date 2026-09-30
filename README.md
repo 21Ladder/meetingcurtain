@@ -11,16 +11,17 @@ Teams or Webex.
 ## Setup
 
 1. **Connect Google Calendar to your Mac.** Go to System Settings → Internet Accounts → Add Account → Google,
-   sign in and turn on **Calendars**. Check that your events show up in the Calendar app.
-2. **Build and install.**
+   sign in and turn on **Calendars**. Check that your events show up in the Calendar app. Check the sync interval
+   on your Calendar to ensure, that they are always up to date.
+3. **Build and install.**
    ```sh
    ./build.sh install
    ```
    This runs the tests, builds a release version, installs it to `~/Applications/MeetingCurtain.app`
-   and starts it.
-3. **Allow access when macOS asks.** Calendar access (**Allow Full Access**) is required.
+   and starts it. You may need Xcode for building.
+4. **Allow access when macOS asks.** Calendar access (**Allow Full Access**) is required.
    Notifications are optional, for alerts on the lock screen.
-4. The Settings window opens on first launch with a **self-check** list. Once every line is green,
+5. The Settings window opens on first launch with a **self-check** list. Once every line is green,
    you're done. The menu bar icon (📅 with a clock) is the only visible part.
 
 Needs macOS 14.4 or newer, with Xcode or the Command Line Tools installed.
