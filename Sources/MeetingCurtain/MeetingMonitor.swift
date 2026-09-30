@@ -61,6 +61,7 @@ final class MeetingMonitor {
     init(prefs: Preferences) {
         self.prefs = prefs
         state = ReminderState(dismissed: Self.loadDismissed())
+        curtain.model.theme = prefs.theme
         timer.onFire = { [weak self] in self?.timerFired() }
         curtain.model.onJoin = { [weak self] in self?.join($0) }
         curtain.model.onSnooze = { [weak self] in self?.snoozeVisible() }
@@ -490,6 +491,8 @@ final class MeetingMonitor {
                 LoginItem.apply(enabled: prefs.launchAtLogin)
             }
             requestSelfCheck(force: true)
+        case .theme:
+            curtain.model.theme = prefs.theme
         }
     }
 

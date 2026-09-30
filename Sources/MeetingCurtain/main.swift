@@ -3,7 +3,9 @@ import AppKit
 // Developer aid: render the curtain to a PNG without showing any window.
 if let index = CommandLine.arguments.firstIndex(of: "--render-curtain"), index + 1 < CommandLine.arguments.count {
     let variant = index + 2 < CommandLine.arguments.count ? CommandLine.arguments[index + 2] : "single"
-    CurtainSnapshot.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]), variant: variant)
+    let theme = index + 3 < CommandLine.arguments.count
+        ? CurtainTheme(rawValue: CommandLine.arguments[index + 3]) ?? .standard : .standard
+    CurtainSnapshot.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]), variant: variant, theme: theme)
     exit(0)
 }
 

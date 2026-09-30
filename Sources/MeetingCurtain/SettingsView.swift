@@ -30,6 +30,10 @@ struct SettingsView: View {
                     Text("Include all-day events")
                     Text("Shown once at 9:00 on the day.")
                 }
+                Picker("Design", selection: $prefs.theme) {
+                    ForEach(CurtainTheme.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
                 LabeledContent("Preview") {
                     Button("Show Test Curtain") { monitor.showTestCurtain() }
                 }

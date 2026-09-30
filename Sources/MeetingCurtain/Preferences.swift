@@ -7,6 +7,7 @@ import MeetingCurtainCore
 final class Preferences {
     enum Key: String {
         case leadMinutes, includeAllDay, skipDeclined, playSound, soundName, lockScreenAlerts, launchAtLogin, calendarChoices
+        case theme
     }
 
     static let defaultSound = "Glass"
@@ -24,6 +25,7 @@ final class Preferences {
     var lockScreenAlerts: Bool { didSet { save(lockScreenAlerts, .lockScreenAlerts) } }
     var launchAtLogin: Bool { didSet { save(launchAtLogin, .launchAtLogin) } }
     var calendarSelection: CalendarSelection { didSet { save(calendarSelection.choices, .calendarChoices) } }
+    var theme: CurtainTheme { didSet { save(theme.rawValue, .theme) } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -35,6 +37,7 @@ final class Preferences {
             Key.soundName.rawValue: Self.defaultSound,
             Key.lockScreenAlerts.rawValue: true,
             Key.launchAtLogin.rawValue: true,
+            Key.theme.rawValue: CurtainTheme.standard.rawValue,
         ])
         let lead = defaults.integer(forKey: Key.leadMinutes.rawValue)
         leadMinutes = min(max(lead, Self.leadRange.lowerBound), Self.leadRange.upperBound)
@@ -48,6 +51,7 @@ final class Preferences {
         calendarSelection = CalendarSelection(
             choices: defaults.dictionary(forKey: Key.calendarChoices.rawValue) as? [String: Bool] ?? [:]
         )
+        theme = defaults.string(forKey: Key.theme.rawValue).flatMap(CurtainTheme.init(rawValue:)) ?? .standard
     }
 
     var policy: CurtainPolicy {

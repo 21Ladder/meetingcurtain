@@ -2,11 +2,11 @@ import AppKit
 import SwiftUI
 import MeetingCurtainCore
 
-/// Renders the curtain to a PNG for design review: `MeetingCurtain --render-curtain out.png [variant]`,
-/// where variant is `single`, `started`, `multi` or `nolink`.
+/// Renders the curtain to a PNG for design review: `MeetingCurtain --render-curtain out.png [variant] [theme]`,
+/// where variant is `single`, `started`, `multi` or `nolink`, and theme is `standard` or `orange`.
 @MainActor
 enum CurtainSnapshot {
-    static func render(to url: URL, variant: String) {
+    static func render(to url: URL, variant: String, theme: CurtainTheme = .standard) {
         let now = Date()
         let blue = CalendarColor(red: 0.26, green: 0.52, blue: 0.96)
         var primary = Meeting(
@@ -32,6 +32,7 @@ enum CurtainSnapshot {
         }
         let model = CurtainModel()
         model.meetings = [primary] + meetings
+        model.theme = theme
 
         let renderer = ImageRenderer(content: CurtainView(model: model).frame(width: 1512, height: 982))
         renderer.scale = 1

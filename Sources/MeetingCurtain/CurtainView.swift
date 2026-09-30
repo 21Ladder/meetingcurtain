@@ -8,6 +8,7 @@ final class CurtainModel {
     var acceptsInput = true
     /// False while the display sleeps or the screen is locked; the countdown then stops ticking.
     var isLive = true
+    var theme: CurtainTheme = .standard
     @ObservationIgnored var onJoin: @MainActor (Meeting) -> Void = { _ in }
     @ObservationIgnored var onSnooze: @MainActor () -> Void = {}
     @ObservationIgnored var onDismiss: @MainActor () -> Void = {}
@@ -19,16 +20,18 @@ struct CurtainView: View {
     let model: CurtainModel
 
     var body: some View {
+        let palette = model.theme.palette
         GeometryReader { proxy in
             let scale = min(max(min(proxy.size.height / 1000, proxy.size.width / 1500), 0.6), 1.6)
             if let primary = model.meetings.first {
-                CurtainContent(primary: primary, others: Array(model.meetings.dropFirst()), model: model, scale: scale)
+                CurtainContent(primary: primary, others: Array(model.meetings.dropFirst()), model: model,
+                               palette: palette, size: proxy.size, scale: scale)
                     .frame(width: proxy.size.width, height: proxy.size.height)
             }
         }
-        .background(Color(red: 0.035, green: 0.035, blue: 0.05))
+        .background(palette.background)
         .ignoresSafeArea()
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, palette.colorScheme)
     }
 }
 
@@ -36,58 +39,115 @@ private struct CurtainContent: View {
     let primary: Meeting
     let others: [Meeting]
     let model: CurtainModel
+    let palette: CurtainPalette
+    let size: CGSize
     let scale: CGFloat
 
     private var accent: Color { Color(primary.color) }
+    private var smileySize: CGFloat { 234 * scale }
+    private var smileyVisibleWidth: CGFloat { smileySize * Smiley.openingX }
+
+    private var titleWidth: CGFloat {
+        guard palette.smiley != nil else { return .infinity }
+        return max(size.width - 2 * (smileyVisibleWidth + 24 * scale), 300 * scale)
+    }
 
     var body: some View {
         ZStack {
-            EllipticalGradient(
-                colors: [accent.opacity(0.55), accent.opacity(0.12), .clear],
-                center: .top, startRadiusFraction: 0, endRadiusFraction: 0.85
-            )
-            VStack(spacing: 0) {
-                accent.frame(height: 6 * scale)
-                Spacer(minLength: 0)
+            if let waves = palette.waves {
+                WaveLines()
+                    .stroke(waves, lineWidth: 1)
+                    .allowsHitTesting(false)
             }
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                header
-                Text(primary.title)
-                    .font(.system(size: 76 * scale, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
-                    .minimumScaleFactor(0.5)
-                    .padding(.top, 20 * scale)
-                details
-                    .padding(.top, 18 * scale)
-                Countdown(meeting: primary, isLive: model.isLive, scale: scale)
-                    .padding(.top, 40 * scale)
-                actions
+            if let smiley = palette.smiley {
+                Smiley()
+                    .fill(smiley)
+                    .frame(width: smileySize, height: smileySize)
+                    .offset(x: smileySize - smileyVisibleWidth)
                     .padding(.top, 48 * scale)
-                    .disabled(!model.acceptsInput)
-                if !others.isEmpty {
-                    othersList
-                        .padding(.top, 44 * scale)
-                        .disabled(!model.acceptsInput)
-                }
-                Spacer(minLength: 0)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .allowsHitTesting(false)
             }
-            .padding(.horizontal, 64 * scale)
-            .padding(.vertical, 48 * scale)
-            .frame(maxWidth: 1300 * scale)
+            if palette.showsCalendarGlow {
+                EllipticalGradient(
+                    colors: [accent.opacity(0.55), accent.opacity(0.12), .clear],
+                    center: .top, startRadiusFraction: 0, endRadiusFraction: 0.85
+                )
+                VStack(spacing: 0) {
+                    accent.frame(height: 6 * scale)
+                    Spacer(minLength: 0)
+                }
+            }
+            if palette.usesThirds {
+                VStack(spacing: 0) {
+                    titleBlock
+                        .frame(maxWidth: titleWidth)
+                        .frame(height: size.height * 0.42, alignment: .bottom)
+                    countdown
+                        .frame(height: size.height * 0.22)
+                    controls
+                        .frame(height: size.height * 0.36, alignment: .top)
+                }
+                .padding(.horizontal, 64 * scale)
+                .frame(maxWidth: 1300 * scale)
+            } else {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    titleBlock
+                    countdown
+                        .padding(.top, 40 * scale)
+                    controls
+                        .padding(.top, 48 * scale)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 64 * scale)
+                .padding(.vertical, 48 * scale)
+                .frame(maxWidth: 1300 * scale)
+            }
+        }
+    }
+
+    private var titleBlock: some View {
+        VStack(spacing: 0) {
+            header
+            Text(primary.title)
+                .font(.system(size: 76 * scale, weight: .bold, design: .rounded))
+                .foregroundStyle(palette.text)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+                .minimumScaleFactor(0.5)
+                .padding(.top, 20 * scale)
+            details
+                .padding(.top, 18 * scale)
+        }
+    }
+
+    private var countdown: some View {
+        Countdown(meeting: primary, isLive: model.isLive, palette: palette, scale: scale)
+    }
+
+    private var controls: some View {
+        VStack(spacing: 0) {
+            actions
+                .disabled(!model.acceptsInput)
+            if !others.isEmpty {
+                othersList
+                    .padding(.top, 44 * scale)
+                    .disabled(!model.acceptsInput)
+            }
         }
     }
 
     private var header: some View {
         HStack(spacing: 10 * scale) {
-            Circle().fill(accent).frame(width: 12 * scale, height: 12 * scale)
+            if palette.showsCalendarDot {
+                Circle().fill(accent).frame(width: 12 * scale, height: 12 * scale)
+            }
             Text(primary.calendarTitle.isEmpty ? "MEETING" : primary.calendarTitle.uppercased())
         }
         .font(.system(size: 17 * scale, weight: .semibold))
         .tracking(3 * scale)
-        .foregroundStyle(.white.opacity(0.7))
+        .foregroundStyle(palette.secondary(0.7))
     }
 
     private var details: some View {
@@ -101,7 +161,7 @@ private struct CurtainContent: View {
             }
         }
         .font(.system(size: 22 * scale, weight: .medium))
-        .foregroundStyle(.white.opacity(0.75))
+        .foregroundStyle(palette.secondary(0.75))
     }
 
     private var actions: some View {
@@ -110,20 +170,28 @@ private struct CurtainContent: View {
                 Button { model.onJoin(primary) } label: {
                     ButtonLabel(title: "Join \(MeetingLinks.serviceName(for: url))", symbol: "video.fill", key: "return", scale: scale)
                 }
-                .buttonStyle(CurtainButtonStyle(fill: accent, darkText: primary.color.prefersDarkText, scale: scale))
+                .buttonStyle(joinStyle(for: primary, scale: scale))
                 .keyboardShortcut(.defaultAction)
             }
             Button { model.onSnooze() } label: {
                 ButtonLabel(title: "Snooze 1 min", symbol: "clock.arrow.circlepath", key: "S", scale: scale)
             }
-            .buttonStyle(CurtainButtonStyle(fill: .white.opacity(0.14), darkText: false, scale: scale))
+            .buttonStyle(CurtainButtonStyle(fill: palette.buttonFill, text: palette.buttonText, stroke: palette.buttonStroke, scale: scale))
             .keyboardShortcut("s", modifiers: [])
             Button { model.onDismiss() } label: {
                 ButtonLabel(title: others.isEmpty ? "Dismiss" : "Dismiss all", symbol: "xmark", key: "esc", scale: scale)
             }
-            .buttonStyle(CurtainButtonStyle(fill: .white.opacity(0.14), darkText: false, scale: scale))
+            .buttonStyle(CurtainButtonStyle(fill: palette.buttonFill, text: palette.buttonText, stroke: palette.buttonStroke, scale: scale))
             .keyboardShortcut(.cancelAction)
         }
+    }
+
+    private func joinStyle(for meeting: Meeting, scale: CGFloat) -> CurtainButtonStyle {
+        if let fill = palette.joinFill {
+            return CurtainButtonStyle(fill: fill, text: palette.joinText, scale: scale)
+        }
+        return CurtainButtonStyle(fill: Color(meeting.color), text: meeting.color.prefersDarkText ? .black : .white,
+                                  scale: scale)
     }
 
     private var othersList: some View {
@@ -131,7 +199,7 @@ private struct CurtainContent: View {
             Text("ALSO STARTING SOON")
                 .font(.system(size: 14 * scale, weight: .semibold))
                 .tracking(2.5 * scale)
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(palette.secondary(0.55))
             ForEach(others.prefix(3)) { meeting in
                 HStack(spacing: 14 * scale) {
                     Circle().fill(Color(meeting.color)).frame(width: 10 * scale, height: 10 * scale)
@@ -141,17 +209,16 @@ private struct CurtainContent: View {
                     Spacer(minLength: 12 * scale)
                     Text(timeRange(meeting))
                         .font(.system(size: 18 * scale, weight: .medium).monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.65))
+                        .foregroundStyle(palette.secondary(0.65))
                     if let url = meeting.joinURL {
                         Button("Join \(MeetingLinks.serviceName(for: url))") { model.onJoin(meeting) }
-                            .buttonStyle(CurtainButtonStyle(fill: Color(meeting.color), darkText: meeting.color.prefersDarkText,
-                                                            scale: scale * 0.7))
+                            .buttonStyle(joinStyle(for: meeting, scale: scale * 0.7))
                     }
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(palette.text)
                 .padding(.horizontal, 20 * scale)
                 .padding(.vertical, 14 * scale)
-                .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16 * scale))
+                .background(palette.cardFill, in: RoundedRectangle(cornerRadius: 16 * scale))
             }
         }
         .frame(maxWidth: 820 * scale)
@@ -177,6 +244,7 @@ private struct CurtainContent: View {
 private struct Countdown: View {
     let meeting: Meeting
     let isLive: Bool
+    let palette: CurtainPalette
     let scale: CGFloat
     @State private var reachedStartID: String?
 
@@ -187,7 +255,7 @@ private struct Countdown: View {
             Text(meeting.isAllDay ? "ALL-DAY EVENT" : started ? "STARTED" : "STARTS IN")
                 .font(.system(size: 18 * scale, weight: .semibold))
                 .tracking(4 * scale)
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(palette.secondary(0.6))
             Group {
                 if meeting.isAllDay {
                     Text("Today")
@@ -202,8 +270,8 @@ private struct Countdown: View {
                     Text(timerInterval: now...meeting.start, pauseTime: isLive ? nil : now, countsDown: true)
                 }
             }
-            .font(.system(size: 168 * scale, weight: .semibold, design: .rounded).monospacedDigit())
-            .foregroundStyle(started && !meeting.isAllDay ? Color(red: 1, green: 0.45, blue: 0.40) : .white)
+            .font(.system(size: palette.countdownSize * scale, weight: .semibold, design: .rounded).monospacedDigit())
+            .foregroundStyle(started && !meeting.isAllDay ? palette.started : palette.text)
         }
         .task(id: meeting.id) {
             let wait = meeting.start.timeIntervalSinceNow
@@ -236,16 +304,20 @@ private struct ButtonLabel: View {
 
 private struct CurtainButtonStyle: ButtonStyle {
     let fill: Color
-    let darkText: Bool
+    let text: Color
+    var stroke: Color?
     let scale: CGFloat
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 22 * scale, weight: .semibold))
-            .foregroundStyle(darkText ? Color.black : Color.white)
+            .foregroundStyle(text)
             .padding(.horizontal, 30 * scale)
             .padding(.vertical, 18 * scale)
             .background(fill, in: Capsule())
+            .overlay {
+                if let stroke { Capsule().strokeBorder(stroke, lineWidth: 1.5 * scale) }
+            }
             .opacity(configuration.isPressed ? 0.7 : 1)
             .contentShape(Capsule())
     }
